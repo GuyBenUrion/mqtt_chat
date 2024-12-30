@@ -1,6 +1,3 @@
-# pip install PyQt5
-# pip install paho-mqtt==1.6.1
-
 # MQTT File and Message Transfer
 
 This project implements a communication system between clients and a server using **MQTT** as the communication protocol. The system allows clients to send messages to each other via MQTT server, sending messages using Direct Message Chat, and transfer files directly between clients.
