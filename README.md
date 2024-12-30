@@ -26,21 +26,7 @@ This project implements a communication system between clients and a server usin
 ## Setup
 
 ### Requirements
-- **Python 3.x**
-- **Paho MQTT**: Python MQTT client library (`pip install paho-mqtt==1.6.1`)
-        ***Notice that app support paho mqtt on version 1.1.6 !!!!***
-- **PyQt5** : Python GUI library (`pip install PyQt5`)
+To ensure the app runs smoothly, you need to install the necessary dependencies. You can easily do this by running the following command:
 
-
-### Running the Server
-To start the server, run the following command:
 ```bash
-python3 mqtt_server.py
- ```
-
-### Running the Chat App
-To start the Chat App, run the following command:
-```bash
-python3 chat_app.py
-```
-
+pip install -r requirements.txt
