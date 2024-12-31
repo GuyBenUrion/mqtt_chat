@@ -4,7 +4,7 @@ import base64
 from PyQt5.QtCore import Qt
 from datetime import datetime
 import paho.mqtt.client as mqtt
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget, QMessageBox, QDialog, QDialogButtonBox, QFileDialog, QProgressBar)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget, QMessageBox, QDialog, QDialogButtonBox, QFileDialog)
 
 # Main login window
 class LoginWindow(QMainWindow):
@@ -202,6 +202,9 @@ class ChatWindow(QMainWindow):
             # Display file name for confirmation
             QMessageBox.information(self, "File Selected", f"Selected file: {file_path}")
             self.send_file(file_path)
+        else:
+            QMessageBox.warning(self, "Error", "No file selected.")
+            return
 
     def send_file(self, file_path):
         file_name = os.path.basename(file_path)
@@ -210,16 +213,18 @@ class ChatWindow(QMainWindow):
         # Select adresssee for the file
         target_username = self.select_username_popup()
 
+        if not target_username:
+            QMessageBox.warning(self, "Error", "Please enter a target username.")
+            return
+
         self.client.publish(f"chat/server", f"FILE_ALERT|{self.username}|{file_name}|{file_size}|{target_username}")
 
-        bytes_sent = 0
 
         with open(file_path, "rb") as f:
             while chunk := f.read(1024):
                 # Encode the binary chunk to base64 before sending
                 encoded_chunk = base64.b64encode(chunk).decode("utf-8")
                 self.client.publish(f"chat/{target_username}/file", f"{file_name}|{encoded_chunk}")
-                bytes_sent += len(chunk)
 
         QMessageBox.information(self, "File Sent", f"File '{file_name}' sent.")
 
@@ -267,11 +272,11 @@ class ChatWindow(QMainWindow):
         print(f"Received chunk for file {file_name}")
 
     def closeEvent(self, event):
-        # Send disconnect message to the server
-        self.client.publish("chat/server", f"DISCONNECT|{self.username}")
-
-        # Ensure proper disconnect
-        self.client.disconnect()
+        # Handle window close event
+        if self.client:
+            self.client.publish("chat/server", f"DISCONNECT|{self.username}")
+            self.client.loop_stop()
+            self.client.disconnect()
 
         # Close the window
         event.accept()
@@ -331,7 +336,6 @@ class DirectMessageWindow(QMainWindow):
 
     def dm_message(self, client, userdata, msg):
         message = msg.payload.decode("utf-8")
-        print(f"Received DM: {message}")
         current_timestamp = datetime.now().strftime("[%Y-%m-%d %H:%M]")
         self.message_label.setText(f"{self.message_label.text()}\n{current_timestamp} {message}")
 

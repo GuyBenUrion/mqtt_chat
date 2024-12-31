@@ -1,104 +1,145 @@
+import logging
 import paho.mqtt.client as mqtt
+from dataclasses import dataclass
+from typing import Dict, List, TypedDict, Optional
 
-# Store clients and their usernames
-clients = {}
-# Store messages for offline users (message queue)
-message_queue = {}
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def on_connect(client, userdata, flags, rc):
-    print("Server connected to MQTT broker.")
+# MQTT Configuration
+BROKER_HOST = "broker.emqx.io"
+BROKER_PORT = 1883
+KEEP_ALIVE = 60
+SERVER_TOPIC = "chat/server"
 
-def on_message(client, userdata, msg):
-    global clients, message_queue
-    topic = msg.topic
-    message = msg.payload.decode('utf-8')
-    if topic == "chat/server":
+# Message types
+class MessageType:
+    REGISTER = "REGISTER"
+    GET_IP = "GET_IP"
+    DISCONNECT = "DISCONNECT"
+    MESSAGE = "MESSAGE"
+    FILE_ALERT = "FILE_ALERT"
 
-        if message.startswith("REGISTER"):
-            # Register new client with its ip
-            reg_msg = message.split("|")
-            msg_type, username, ip = reg_msg
-            print(f"Registering {username} with IP {ip}")
-            clients[username] = {client: ip} # Store the MQTT client for the user
-            print(f"{username} registered and is online.")
+@dataclass
+class SavedMessage:
+    sender: str
+    content: str
 
-            # Check if there are any messages saved for this user
-            if username in message_queue:
-                for saved_message in message_queue[username]:
-                    # Send saved messages to the user once they log in
-                    client.publish(f"chat/{username}", f"From {saved_message['from']}: {saved_message['content']}")
-                # Clear saved messages after sending
-                del message_queue[username]
+class ClientInfo(TypedDict):
+    client: mqtt.Client
+    ip: str
 
-        elif message.startswith("GET_IP"):
-            # Get the IP address of a client"
-            msg_type, target_username, username = message.split("|")
-            if target_username in clients:
-                client_ip = clients[target_username]
-                ip = list(client_ip.values())[0]
-                client.publish(f"chat/{username}", f"{target_username} IP address is: {ip}")
-            else:
-                client.publish(f"chat/{username}", f"{target_username} is not online.")
-                print(f"{target_username} is not online.")
+# Global state
+clients: Dict[str, ClientInfo] = {}
+message_queue: Dict[str, List[SavedMessage]] = {}
 
-        elif message.startswith("DISCONNECT"):
-            # Disconnect a client: "DISCONNECT:username"
-            username = message.split("|")[-1]
-            if username in clients:
-                del clients[username]  # Remove the user from the clients dictionary
-                print(f"{username} disconnected and removed from the client list.")
+def handle_register(client: mqtt.Client, username: str, ip: str) -> None:
+    # Handle client registration
+    clients[username] = {"client": client, "ip": ip}
+    logger.info(f"User {username} registered with IP {ip}")
 
-        elif message.startswith("MESSAGE"):
+    # Send queued messages if any
+    if username in message_queue:
+        for saved_message in message_queue[username]:
+            client.publish(
+                f"chat/{username}",
+                f"From {saved_message.sender}: {saved_message.content}"
+            )
+        del message_queue[username]
+        logger.info(f"Delivered queued messages to {username}")
 
-            try:
-                msg_type, sender, content, target = message.split("|")
-            except ValueError:
-                print("Invalid message format.")
-
-            # If target is online, forward the message
-            if target in clients:
-                client.publish(f"chat/{target}", f"From {sender}: {content}")
-                print(f"Message sent to {target}: {content}")
-            else:
-                # If the target is offline, save the message
-                if target not in message_queue:
-                    message_queue[target] = []
-
-                message_queue[target].append({"from": sender, "content": content})
-                print(f"{target} is offline. Message saved.")
-
-        elif message.startswith("FILE_ALERT"):
-            # Send a file alert to the target user
-            msg_type, sender, file_name, file_size, target = message.split("|")
-            if target in clients:
-                client.publish(f"chat/{target}", f"{sender} sent you a file: {file_name}, with size: {file_size}")  
-                print(f"File alert sent to {target}: {file_name}")
-            else:
-                print(f"{target} is offline. File alert not sent.")
-        
-        elif message.startswith("FILE"):
-            # Send a file to the target user
-            msg_type, file_name, target, chunk = message.split("|", 3)
-
-            if target in clients:
-                client.publish(f"chat/{target}/file", f"{file_name}|{chunk}")
-                print(f"File sent to {target}: {file_name}")
-            else:
-                print(f"{target} is offline. File not sent.")
+def handle_get_ip(client: mqtt.Client, target_username: str, username: str) -> None:
+    # Handle IP address request
+    if target_username in clients:
+        client_ip = clients[target_username]["ip"]
+        client.publish(f"chat/{username}", f"{target_username} IP address is: {client_ip}")
+        logger.info(f"IP address for {target_username} sent to {username}")
     else:
-        print(f"Unhandled topic: {topic}")
+        client.publish(f"chat/{username}", f"{target_username} is not online.")
+        logger.info(f"IP request failed: {target_username} is not online")
 
-# Create MQTT client for the server
-server = mqtt.Client("chat_server")
-server.on_connect = on_connect
-server.on_message = on_message
+def handle_disconnect(username: str) -> None:
+    # Hamdle client disconnect
+    if username in clients:
+        del clients[username]
+        logger.info(f"User {username} disconnected")
 
-# Connect to the public broker
-server.connect("broker.emqx.io", 1883, 60)
+def handle_message(client: mqtt.Client, sender: str, content: str, target: str) -> None:
+    if target in clients:
+        client.publish(f"chat/{target}", f"From {sender}: {content}")
+        logger.info(f"Message delivered from {sender} to {target}")
+    else:
+        if target not in message_queue:
+            message_queue[target] = []
+        message_queue[target].append(SavedMessage(sender=sender, content=content))
+        logger.info(f"Message queued for offline user {target}")
 
-# Subscribe to server topic
-server.subscribe("chat/server")
+def handle_file_alert(client: mqtt.Client, sender: str, file_name: str, file_size: str, target: str) -> None:
+    if target in clients:
+        client.publish(f"chat/{target}",f"{sender} sent you a file: {file_name}, with size: {file_size}")
+        logger.info(f"File alert sent to {target} for file {file_name}")
+    else:
+        logger.info(f"File alert not sent: {target} is offline")
 
-# Start the server loop
-print("MQTT server is running...")
-server.loop_forever()
+def on_connect(client: mqtt.Client, userdata: Optional[Dict], flags: Dict, rc: int) -> None:
+    logger.info("Server connected to MQTT broker")
+
+def on_message(client: mqtt.Client, userdata: Optional[Dict], msg: mqtt.MQTTMessage) -> None:
+    # Handle incoming messages
+    topic = msg.topic
+    try:
+        message = msg.payload.decode('utf-8')
+        
+        if topic != SERVER_TOPIC:
+            logger.warning(f"Unhandled topic: {topic}")
+            return
+
+        parts = message.split("|")
+        msg_type = parts[0]
+
+        if msg_type == MessageType.REGISTER and len(parts) == 3:
+            _, username, ip = parts
+            handle_register(client, username, ip)
+        
+        elif msg_type == MessageType.GET_IP and len(parts) == 3:
+            _, target_username, username = parts
+            handle_get_ip(client, target_username, username)
+        
+        elif msg_type == MessageType.DISCONNECT and len(parts) == 2:
+            _, username = parts
+            handle_disconnect(username)
+        
+        elif msg_type == MessageType.MESSAGE and len(parts) == 4:
+            _, sender, content, target = parts
+            handle_message(client, sender, content, target)
+        
+        elif msg_type == MessageType.FILE_ALERT and len(parts) == 5:
+            _, sender, file_name, file_size, target = parts
+            handle_file_alert(client, sender, file_name, file_size, target)
+        
+        else:
+            logger.warning(f"Invalid message format or unknown message type: {message}")
+
+    except Exception as e:
+        logger.error(f"Error processing message: {str(e)}")
+
+def main() -> None:
+    try:
+        server = mqtt.Client("chat_server")
+        server.on_connect = on_connect
+        server.on_message = on_message
+
+        server.connect(BROKER_HOST, BROKER_PORT, KEEP_ALIVE)
+        server.subscribe(SERVER_TOPIC)
+
+        logger.info("MQTT server is running...")
+        server.loop_forever()
+    except Exception as e:
+        logger.error(f"Server error: {str(e)}")
+
+if __name__ == "__main__":
+    main()
